@@ -7,6 +7,7 @@ Only scan systems you own or have explicit permission to test
 import banner
 import risk
 import scanner
+import storage
 
 
 def print_report(data, assessment):
@@ -62,3 +63,8 @@ if __name__ == "__main__":
         raise SystemExit(f"Error: {err}")
     banner.enrich(result, timeout=max(timeout, 2.0))
     print_report(result, risk.assess(result))
+
+    if input("Save this scan to history? (y/n): ").strip().lower() == "y":
+        db = storage.connect()
+        scan_id = storage.save_scan(db, result)
+        print(f"Saved as scan #{scan_id} in {storage.DEFAULT_DB}")
