@@ -25,6 +25,8 @@ SERVICE_RISK = {
             "Replace with SFTP or SCP."),
     "pop3": ("High", "POP3 sends mail credentials unencrypted.",
              "Use POP3S or IMAPS."),
+    "smb": ("High", "File sharing exposed to the network has a long history of attacks.",
+            "Block it at the firewall unless needed, keep systems patched, and disable SMBv1."),
     "ssh": ("Medium", "Encrypted, but exposed logins can be brute-forced.",
             "Use key-based login and restrict allowed IPs."),
     "smtp": ("Medium", "Mail servers can be abused for spam or open relay.",
