@@ -16,6 +16,7 @@ SCANNER_VERSION = "1.1"
 # Safety limits so nobody (including you, by accident) scans too much.
 MAX_PORTS = 10000
 MAX_WORKERS = 200
+DEFAULT_WORKERS = 50
 MAX_TIMEOUT = 10.0
 
 # The four states a port can be in.
@@ -66,6 +67,9 @@ def resolve_target(target, ip_version="auto"):
     """
     if ip_version not in ("auto", "4", "6"):
         raise ValueError('IP version must be "auto", "4" or "6".')
+    target = (target or "").strip()
+    if not target:
+        raise ValueError("Target cannot be empty.")
     try:
         infos = socket.getaddrinfo(target, None, family=socket.AF_UNSPEC,
                                    type=socket.SOCK_STREAM)
@@ -112,7 +116,8 @@ def validate_scan_request(start_port, end_port, timeout, workers):
         raise ValueError(f"Workers must be between 1 and {MAX_WORKERS}.")
 
 
-def scan(target, start_port, end_port, timeout=1.0, workers=50, ip_version="auto"):
+def scan(target, start_port, end_port, timeout=1.0, workers=DEFAULT_WORKERS,
+         ip_version="auto", resolved=None):
     """Scan a port range on one target and return a structured result (dict).
 
     The scan configuration is stored with the results, so later (V2) we can
@@ -123,7 +128,9 @@ def scan(target, start_port, end_port, timeout=1.0, workers=50, ip_version="auto
     target = target.strip()
     if not target:
         raise ValueError("Target cannot be empty.")
-    resolved = resolve_target(target, ip_version)
+    # 'resolved' can be passed in when the caller already resolved the name (for
+    # example to ask permission for that exact address), so it is not looked up twice.
+    resolved = resolved or resolve_target(target, ip_version)
     ip = resolved["address"]
 
     started = datetime.now(timezone.utc)
@@ -161,13 +168,4 @@ def summarize(scan_result):
 
 
 if __name__ == "__main__":
-    # Quick manual test: python scanner.py
-    host = input("Target (use localhost or scanme.nmap.org): ").strip()
-    start = int(input("Start port: "))
-    end = int(input("End port: "))
-    data = scan(host, start, end)
-    print(f"\nScanned {data['target']} ({data['resolved_ip']})")
-    for r in data["results"]:
-        if r["state"] == OPEN:
-            print(f"  {r['port']:<6} OPEN")
-    print("\nSummary:", summarize(data))
+    print("Run run_scan.py instead: it asks for authorization before scanning.")

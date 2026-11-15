@@ -127,19 +127,4 @@ def enrich(scan_result, timeout=2.0, workers=20):
 
 
 if __name__ == "__main__":
-    import scanner
-
-    host = input("Target (localhost or scanme.nmap.org): ").strip()
-    start = int(input("Start port: "))
-    end = int(input("End port: "))
-    t = float(input("Timeout seconds (use 3+ for localhost on Windows) [1]: ") or 1)
-    data = enrich(scanner.scan(host, start, end, timeout=t), timeout=max(t, 2.0))
-    for r in data["results"]:
-        if r["state"] == "OPEN":
-            info = r["service_info"]
-            flag = "  <-- UNEXPECTED for this port" if info["unexpected_for_port"] else ""
-            print(f"{r['port']:<6} {info['service']:<10} {info['product']:<30} "
-                  f"[{info['confidence']}, {info['evidence']}]{flag}")
-            if r["banner"]:
-                print(f"       banner: {r['banner']}")
-    print("\nSummary:", scanner.summarize(data))
+    print("Run run_scan.py instead: it asks for authorization before scanning.")

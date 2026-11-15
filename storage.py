@@ -1,21 +1,30 @@
-"""PortWatch V2 (piece 1) - save scans to SQLite and load them back.
+"""PortWatch storage - save scans to SQLite and load them back.
 
 SQLite ships with Python, so there is nothing to install.
 
 Two tables:
-  scans         one row per scan (target, times, settings)
+  scans         one row per scan (target, times, settings, authorization record)
   port_results  one row per port checked in that scan
 
 load_scan() returns the SAME dictionary shape that scanner.scan() produced, so
 banner.py and risk.py work on saved scans exactly as they do on fresh ones.
+
+Schema versions (stored with SQLite's 'user_version' setting):
+  1  scans and port_results (the first release of storage)
+  2  adds the authorization record to scans: operator, ack_at, ack_version
+connect() upgrades older databases automatically and keeps their data. Before
+upgrading a database that already holds scans it makes a backup copy next to it.
 """
 
 import json
+import os
 import sqlite3
+from datetime import datetime
 
 DEFAULT_DB = "portwatch.db"
+SCHEMA_VERSION = 2
 
-SCHEMA = """
+SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS scans (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     target      TEXT NOT NULL,
@@ -39,26 +48,85 @@ CREATE TABLE IF NOT EXISTS port_results (
 );
 """
 
+# Columns added in version 2 (name, type). Scans saved before this have NULL here,
+# meaning "pre-audit": no authorization was recorded, and none is invented.
+NEW_COLUMNS_V2 = [("operator", "TEXT"), ("ack_at", "TEXT"), ("ack_version", "TEXT")]
 
-def connect(path=DEFAULT_DB):
-    """Open the database (creating it if needed) and make sure the tables exist."""
+
+def _table_exists(conn, name):
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+    return row is not None
+
+
+def _columns(conn, table):
+    # 'table' is always one of our own constant names, never user input.
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _backup(conn, path):
+    """Copy a database file to a time-stamped backup next to it. Returns the new path."""
+    root, ext = os.path.splitext(path)
+    dest = f"{root}.pre-migration-{datetime.now().strftime('%Y%m%dT%H%M%S')}{ext}"
+    copy = sqlite3.connect(dest)
+    try:
+        conn.backup(copy)
+    finally:
+        copy.close()
+    return dest
+
+
+def _upgrade(conn, path, on_migrate=None):
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version > SCHEMA_VERSION:
+        conn.close()
+        raise ValueError(
+            f"{path} was made by a newer version of PortWatch (schema {version}). "
+            "Update PortWatch instead of opening it with this version.")
+
+    # A database that already has scans but is older than the current schema is
+    # protected with a backup before anything is changed.
+    has_data = _table_exists(conn, "scans") and version < SCHEMA_VERSION
+    if has_data and path != ":memory:":
+        dest = _backup(conn, path)
+        if on_migrate:
+            on_migrate(f"Upgrading the scan database. A backup was saved as {dest}")
+
+    conn.executescript(SCHEMA_V1)  # creates missing tables; leaves existing ones alone
+
+    if version < 2:
+        existing = _columns(conn, "scans")
+        for name, coltype in NEW_COLUMNS_V2:
+            if name not in existing:  # safe to run again after an interrupted upgrade
+                conn.execute(f"ALTER TABLE scans ADD COLUMN {name} {coltype}")
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+
+
+def connect(path=DEFAULT_DB, on_migrate=None):
+    """Open the database (creating or upgrading it if needed)."""
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
+    _upgrade(conn, path, on_migrate)
     return conn
 
 
 def save_scan(conn, scan_result):
-    """Store one scan and all its port results. Returns the new scan id."""
+    """Store one scan and all its port results. Returns the new scan id.
+
+    If the scan carries an 'acknowledgment' (see audit.py) it is stored with it.
+    """
+    ack = scan_result.get("acknowledgment") or {}
     # '?' placeholders (not string formatting) keep user-supplied text from being
     # run as SQL. The target name comes from the user, so this matters.
     with conn:  # one transaction: either everything is saved, or nothing is
         cur = conn.execute(
-            "INSERT INTO scans (target, resolved_ip, started_at, finished_at, config_json) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO scans (target, resolved_ip, started_at, finished_at, config_json, "
+            "operator, ack_at, ack_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (scan_result["target"], scan_result["resolved_ip"],
              scan_result["started_at"], scan_result["finished_at"],
-             json.dumps(scan_result["config"])),
+             json.dumps(scan_result["config"]),
+             ack.get("operator"), ack.get("acknowledged_at"), ack.get("text_version")),
         )
         scan_id = cur.lastrowid
 
@@ -83,14 +151,9 @@ def save_scan(conn, scan_result):
 
 def list_scans(conn, target=None):
     """Return saved scans, newest first. Optionally only one target."""
-    if target:
-        cur = conn.execute(
-            "SELECT id, target, resolved_ip, started_at, config_json FROM scans "
-            "WHERE target = ? ORDER BY id DESC", (target,))
-    else:
-        cur = conn.execute(
-            "SELECT id, target, resolved_ip, started_at, config_json FROM scans "
-            "ORDER BY id DESC")
+    sql = ("SELECT id, target, resolved_ip, started_at, config_json, ack_at FROM scans "
+           + ("WHERE target = ? " if target else "") + "ORDER BY id DESC")
+    cur = conn.execute(sql, (target,) if target else ())
     scans = []
     for row in cur.fetchall():
         config = json.loads(row["config_json"])
@@ -98,6 +161,7 @@ def list_scans(conn, target=None):
             "id": row["id"], "target": row["target"], "resolved_ip": row["resolved_ip"],
             "started_at": row["started_at"],
             "ports": f"{config['start_port']}-{config['end_port']}",
+            "audited": row["ack_at"] is not None,
         })
     return scans
 
@@ -122,6 +186,11 @@ def load_scan(conn, scan_id):
             }
         results.append(entry)
 
+    acknowledgment = None
+    if head["ack_at"] is not None:
+        acknowledgment = {"operator": head["operator"], "acknowledged_at": head["ack_at"],
+                          "text_version": head["ack_version"]}
+
     return {
         "id": head["id"],
         "target": head["target"],
@@ -129,15 +198,17 @@ def load_scan(conn, scan_id):
         "started_at": head["started_at"],
         "finished_at": head["finished_at"],
         "config": json.loads(head["config_json"]),
+        "acknowledgment": acknowledgment,  # None means a pre-audit scan
         "results": results,
     }
 
 
 if __name__ == "__main__":
     # Show what is saved: python storage.py
-    db = connect()
+    db = connect(on_migrate=print)
     scans = list_scans(db)
     if not scans:
         print("No saved scans yet.")
     for s in scans:
-        print(f"#{s['id']:<4} {s['target']:<22} ports {s['ports']:<12} {s['started_at']}")
+        note = "" if s["audited"] else "  (pre-audit: no authorization record)"
+        print(f"#{s['id']:<4} {s['target']:<22} ports {s['ports']:<12} {s['started_at']}{note}")

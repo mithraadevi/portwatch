@@ -4,6 +4,7 @@ Only scan systems you own or have explicit permission to test
 (localhost, your own devices, or scanme.nmap.org).
 """
 
+import audit
 import banner
 import risk
 import scanner
@@ -21,6 +22,11 @@ def print_report(data, assessment):
     if others:
         print(f" This name also resolves to: {', '.join(others)} (not scanned)")
     print(f" Ports {cfg['start_port']}-{cfg['end_port']}  |  timeout {cfg['timeout']}s")
+    ack = data.get("acknowledgment")
+    if ack:
+        print(f" Authorization confirmed by {ack['operator']} at {ack['acknowledged_at']}")
+    else:
+        print(" No authorization record (pre-audit scan)")
     print("=" * 60)
     print(f" Open: {counts['OPEN']}   Closed: {counts['CLOSED']}   "
           f"No response: {counts['NO_RESPONSE']}   Errors: {counts['ERROR']}")
@@ -70,14 +76,29 @@ if __name__ == "__main__":
     end = ask_int("End port: ")
     timeout = float(input("Timeout seconds (use 3+ for localhost on Windows) [1]: ") or 1)
     ip_version = ask_ip_version()
+
     try:
-        result = scanner.scan(host, start, end, timeout=timeout, ip_version=ip_version)
+        scanner.validate_scan_request(start, end, timeout, scanner.DEFAULT_WORKERS)
+        resolved = scanner.resolve_target(host, ip_version)
     except ValueError as err:
         raise SystemExit(f"Error: {err}")
+
+    print(f"\n{host} resolves to {resolved['address']} (IPv{resolved['version']}).")
+    ack = audit.require_acknowledgment(resolved["address"])
+    if ack is None:
+        raise SystemExit("Scan cancelled: authorization was not confirmed.")
+
+    try:
+        # Scan exactly the address that was acknowledged.
+        result = scanner.scan(host, start, end, timeout=timeout,
+                              ip_version=ip_version, resolved=resolved)
+    except ValueError as err:
+        raise SystemExit(f"Error: {err}")
+    result["acknowledgment"] = ack
     banner.enrich(result, timeout=max(timeout, 2.0))
     print_report(result, risk.assess(result))
 
     if input("Save this scan to history? (y/n): ").strip().lower() == "y":
-        db = storage.connect()
+        db = storage.connect(on_migrate=print)
         scan_id = storage.save_scan(db, result)
         print(f"Saved as scan #{scan_id} in {storage.DEFAULT_DB}")
