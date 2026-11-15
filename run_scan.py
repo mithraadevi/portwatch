@@ -14,8 +14,12 @@ def print_report(data, assessment):
     counts = scanner.summarize(data)
     print()
     print("=" * 60)
-    print(f" PortWatch report: {data['target']} ({data['resolved_ip']})")
     cfg = data["config"]
+    family = f"IPv{cfg['ip_version']}" if "ip_version" in cfg else "IPv4"
+    print(f" PortWatch report: {data['target']} ({data['resolved_ip']}, {family})")
+    others = [a for a in cfg.get("resolved_addresses", []) if a != data["resolved_ip"]]
+    if others:
+        print(f" This name also resolves to: {', '.join(others)} (not scanned)")
     print(f" Ports {cfg['start_port']}-{cfg['end_port']}  |  timeout {cfg['timeout']}s")
     print("=" * 60)
     print(f" Open: {counts['OPEN']}   Closed: {counts['CLOSED']}   "
@@ -42,6 +46,14 @@ def print_report(data, assessment):
     print("=" * 60)
 
 
+def ask_ip_version():
+    while True:
+        choice = input("IP version: auto, 4 or 6 [auto]: ").strip().lower() or "auto"
+        if choice in ("auto", "4", "6"):
+            return choice
+        print("Please type auto, 4 or 6.")
+
+
 def ask_int(prompt, default=None):
     raw = input(prompt).strip()
     if not raw and default is not None:
@@ -57,8 +69,9 @@ if __name__ == "__main__":
     start = ask_int("Start port: ")
     end = ask_int("End port: ")
     timeout = float(input("Timeout seconds (use 3+ for localhost on Windows) [1]: ") or 1)
+    ip_version = ask_ip_version()
     try:
-        result = scanner.scan(host, start, end, timeout=timeout)
+        result = scanner.scan(host, start, end, timeout=timeout, ip_version=ip_version)
     except ValueError as err:
         raise SystemExit(f"Error: {err}")
     banner.enrich(result, timeout=max(timeout, 2.0))

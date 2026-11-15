@@ -17,6 +17,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 MAX_BANNER_LEN = 200
 
+# Version of the identification rules (PORT_GUESSES and the banner patterns below).
+# Saved with every scan. Raise it whenever those rules change, so that a changed
+# label (for example 'unknown' -> 'smb') can be told apart from a real change on
+# the target. 1 = rules before SMB was added, 2 = rules with SMB.
+RULES_VERSION = "2"
+
 # Weak guesses based only on the port number (confidence: low).
 PORT_GUESSES = {
     21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "dns", 80: "http",
@@ -115,6 +121,8 @@ def enrich(scan_result, timeout=2.0, workers=20):
         list(pool.map(work, open_entries))
 
     scan_result["config"]["banner_grabbing"] = True
+    scan_result["config"]["banner_timeout"] = timeout
+    scan_result["config"]["rules_version"] = RULES_VERSION
     return scan_result
 
 

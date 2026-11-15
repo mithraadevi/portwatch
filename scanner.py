@@ -5,12 +5,13 @@ Returns structured data (not printed text) so a UI, tests, or storage
 can all use the same results.
 """
 
+import ipaddress
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 
-SCANNER_VERSION = "1.0"
+SCANNER_VERSION = "1.1"
 
 # Safety limits so nobody (including you, by accident) scans too much.
 MAX_PORTS = 10000
@@ -45,6 +46,58 @@ def check_port(ip, port, timeout):
         return PortResult(port, ERROR, str(e))
 
 
+def normalize_address(addr):
+    """Write an IP address in one standard form ('0:0:0:0:0:0:0:1' becomes '::1')."""
+    try:
+        return str(ipaddress.ip_address(addr))
+    except ValueError:
+        return addr
+
+
+def resolve_target(target, ip_version="auto"):
+    """Resolve a hostname or IP literal and choose ONE address to scan.
+
+    Returns {"address": chosen, "version": 4 or 6, "all": every address found}.
+    The list is de-duplicated and sorted (IPv4 first), and the choice follows
+    fixed rules, so the same name always gives the same choice:
+      "auto" -> the lowest IPv4 address, or IPv6 only if the name has no IPv4
+      "4"    -> the lowest IPv4 address (error if none)
+      "6"    -> the lowest IPv6 address (error if none)
+    """
+    if ip_version not in ("auto", "4", "6"):
+        raise ValueError('IP version must be "auto", "4" or "6".')
+    try:
+        infos = socket.getaddrinfo(target, None, family=socket.AF_UNSPEC,
+                                   type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise ValueError(f"Could not resolve target: {target}")
+
+    found = set()
+    for info in infos:
+        try:
+            found.add(ipaddress.ip_address(normalize_address(info[4][0])))
+        except ValueError:
+            continue  # ignore anything that is not a plain IP address
+    v4 = sorted(a for a in found if a.version == 4)
+    v6 = sorted(a for a in found if a.version == 6)
+    if not v4 and not v6:
+        raise ValueError(f"Could not resolve target: {target}")
+
+    if ip_version == "4":
+        if not v4:
+            raise ValueError(f"No IPv4 address found for {target}.")
+        chosen = v4[0]
+    elif ip_version == "6":
+        if not v6:
+            raise ValueError(f"No IPv6 address found for {target}.")
+        chosen = v6[0]
+    else:
+        chosen = v4[0] if v4 else v6[0]
+
+    return {"address": str(chosen), "version": chosen.version,
+            "all": [str(a) for a in v4 + v6]}
+
+
 def validate_scan_request(start_port, end_port, timeout, workers):
     """Raise ValueError if the request is invalid or too large."""
     if not (1 <= start_port <= 65535 and 1 <= end_port <= 65535):
@@ -59,7 +112,7 @@ def validate_scan_request(start_port, end_port, timeout, workers):
         raise ValueError(f"Workers must be between 1 and {MAX_WORKERS}.")
 
 
-def scan(target, start_port, end_port, timeout=1.0, workers=50):
+def scan(target, start_port, end_port, timeout=1.0, workers=50, ip_version="auto"):
     """Scan a port range on one target and return a structured result (dict).
 
     The scan configuration is stored with the results, so later (V2) we can
@@ -70,10 +123,8 @@ def scan(target, start_port, end_port, timeout=1.0, workers=50):
     target = target.strip()
     if not target:
         raise ValueError("Target cannot be empty.")
-    try:
-        ip = socket.gethostbyname(target)  # IPv4 only for now
-    except socket.gaierror:
-        raise ValueError(f"Could not resolve target: {target}")
+    resolved = resolve_target(target, ip_version)
+    ip = resolved["address"]
 
     started = datetime.now(timezone.utc)
     ports = range(start_port, end_port + 1)
@@ -92,6 +143,9 @@ def scan(target, start_port, end_port, timeout=1.0, workers=50):
             "end_port": end_port,
             "timeout": timeout,
             "workers": workers,
+            "ip_version_requested": ip_version,
+            "ip_version": resolved["version"],
+            "resolved_addresses": resolved["all"],
             "scanner_version": SCANNER_VERSION,
         },
         "results": [asdict(r) for r in results],
