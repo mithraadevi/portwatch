@@ -1,0 +1,5 @@
+# PortWatch has no third-party dependencies: it uses only the Python standard library.
+# Requires Python 3.10 or newer.
+#
+# Planned: the Streamlit interface (not built yet) will add
+# streamlit
