@@ -9,6 +9,7 @@ This only READS the database. It never scans anything and never changes data.
 
 import sys
 
+import chain
 import drift
 import storage
 
@@ -19,7 +20,9 @@ def show_scans(db):
         print("No saved scans yet. Run run_scan.py and answer y when asked to save.")
         return False
     for s in scans:
-        note = "" if s["audited"] else "  (pre-audit)"
+        flags = [text for text, missing in (("pre-audit", not s["audited"]),
+                                            ("pre-chain", not s["chained"])) if missing]
+        note = f"  ({', '.join(flags)})" if flags else ""
         print(f"#{s['id']:<4} {s['target']:<20} {s['resolved_ip']:<16} ports {s['ports']:<11} "
               f"{s['started_at'][:19]}{note}")
     return True
@@ -49,12 +52,14 @@ if __name__ == "__main__":
     except ValueError as err:
         raise SystemExit(f"Error: {err}")
 
-    result = drift.compare_scans(old, new)
+    history = chain.verify(db)["scans"]
+    result = drift.compare_scans(old, new, verification=history)
     if result["blocked_kind"] == "address":
         print("\n" + drift.render(result))
         if input("\nCompare anyway? Results may not describe the same system. (y/n): "
                  ).strip().lower() == "y":
-            result = drift.compare_scans(old, new, allow_different_address=True)
+            result = drift.compare_scans(old, new, allow_different_address=True,
+                                         verification=history)
         else:
             raise SystemExit(0)
     print("\n" + drift.render(result))

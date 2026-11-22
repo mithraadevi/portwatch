@@ -79,8 +79,12 @@ def _blocked(result, reason, kind):
 
 # ---------- the comparison ----------
 
-def compare_scans(old, new, allow_different_address=False):
-    """Compare two scans of the same target. 'old' should be the earlier one."""
+def compare_scans(old, new, allow_different_address=False, verification=None):
+    """Compare two scans of the same target. 'old' should be the earlier one.
+
+    verification (optional) is the 'scans' dictionary from chain.verify(); when given,
+    the result says whether each compared scan passed the history check.
+    """
     result = {
         "comparable": True, "blocked_reason": None, "blocked_kind": None,
         "old_id": old.get("id"), "new_id": new.get("id"),
@@ -155,6 +159,21 @@ def compare_scans(old, new, allow_different_address=False):
     for scan, label in ((old, "first"), (new, "second")):
         if scan.get("id") is not None and scan.get("acknowledgment") is None and "acknowledgment" in scan:
             notes.append(f"Scan #{scan['id']} ({label}) is a pre-audit scan: no authorization record.")
+
+    # 4b. Did the history check pass for these two scans?
+    if verification is not None:
+        for scan, label in ((old, "first"), (new, "second")):
+            info = verification.get(scan.get("id"))
+            if info is None:
+                continue
+            if info["status"] == "broken":
+                warnings.append(f"Scan #{scan['id']} ({label}) FAILED history verification: "
+                                f"{'; '.join(info['problems'])}. Its data may have been altered.")
+            elif info["status"] == "pre-chain":
+                notes.append(f"Scan #{scan['id']} ({label}) is pre-chain: its integrity "
+                             "cannot be verified.")
+            else:
+                notes.append(f"Scan #{scan['id']} ({label}) passed history verification.")
 
     # 5. May service labels be compared at all?
     compare_labels = old_cfg.get("banner_grabbing") is True and new_cfg.get("banner_grabbing") is True

@@ -3,7 +3,8 @@
 SQLite ships with Python, so there is nothing to install.
 
 Two tables:
-  scans         one row per scan (target, times, settings, authorization record)
+  scans         one row per scan (target, times, settings, authorization record,
+                and the fingerprints that chain the history together)
   port_results  one row per port checked in that scan
 
 load_scan() returns the SAME dictionary shape that scanner.scan() produced, so
@@ -12,6 +13,7 @@ banner.py and risk.py work on saved scans exactly as they do on fresh ones.
 Schema versions (stored with SQLite's 'user_version' setting):
   1  scans and port_results (the first release of storage)
   2  adds the authorization record to scans: operator, ack_at, ack_version
+  3  adds the hash chain to scans: prev_hash, record_hash (see chain.py)
 connect() upgrades older databases automatically and keeps their data. Before
 upgrading a database that already holds scans it makes a backup copy next to it.
 """
@@ -21,8 +23,10 @@ import os
 import sqlite3
 from datetime import datetime
 
+import chain
+
 DEFAULT_DB = "portwatch.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS scans (
@@ -48,9 +52,14 @@ CREATE TABLE IF NOT EXISTS port_results (
 );
 """
 
-# Columns added in version 2 (name, type). Scans saved before this have NULL here,
-# meaning "pre-audit": no authorization was recorded, and none is invented.
+# Columns added by each schema step (name, type).
+# Version 2: scans saved before it have NULL here, meaning "pre-audit": no
+#            authorization was recorded, and none is invented.
+# Version 3: scans saved before it have NULL here, meaning "pre-chain": they
+#            cannot be verified, and no fingerprint is invented for them.
 NEW_COLUMNS_V2 = [("operator", "TEXT"), ("ack_at", "TEXT"), ("ack_version", "TEXT")]
+NEW_COLUMNS_V3 = [("prev_hash", "TEXT"), ("record_hash", "TEXT")]
+MIGRATION_STEPS = [(2, NEW_COLUMNS_V2), (3, NEW_COLUMNS_V3)]
 
 
 def _table_exists(conn, name):
@@ -94,12 +103,15 @@ def _upgrade(conn, path, on_migrate=None):
 
     conn.executescript(SCHEMA_V1)  # creates missing tables; leaves existing ones alone
 
-    if version < 2:
+    if version < SCHEMA_VERSION:
         existing = _columns(conn, "scans")
-        for name, coltype in NEW_COLUMNS_V2:
-            if name not in existing:  # safe to run again after an interrupted upgrade
-                conn.execute(f"ALTER TABLE scans ADD COLUMN {name} {coltype}")
-        conn.execute("PRAGMA user_version = 2")
+        for step_version, columns in MIGRATION_STEPS:
+            if version < step_version:
+                for name, coltype in columns:
+                    if name not in existing:  # safe to run again after an interrupted upgrade
+                        conn.execute(f"ALTER TABLE scans ADD COLUMN {name} {coltype}")
+                        existing.add(name)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
 
 
@@ -115,8 +127,13 @@ def save_scan(conn, scan_result):
     """Store one scan and all its port results. Returns the new scan id.
 
     If the scan carries an 'acknowledgment' (see audit.py) it is stored with it.
+    The scan is then sealed into the fingerprint chain (see chain.py).
     """
     ack = scan_result.get("acknowledgment") or {}
+    # Concurrent saves cannot fork the chain, because of the ORDER of things below:
+    # the first INSERT takes SQLite's write lock, and only then is the previous
+    # fingerprint read and the new one written, all in this one transaction.
+    # Do not move the sealing into a separate transaction.
     # '?' placeholders (not string formatting) keep user-supplied text from being
     # run as SQL. The target name comes from the user, so this matters.
     with conn:  # one transaction: either everything is saved, or nothing is
@@ -146,13 +163,14 @@ def save_scan(conn, scan_result):
             "product, confidence, evidence, unexpected) VALUES (?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
+        chain.seal(conn, scan_id)
     return scan_id
 
 
 def list_scans(conn, target=None):
     """Return saved scans, newest first. Optionally only one target."""
-    sql = ("SELECT id, target, resolved_ip, started_at, config_json, ack_at FROM scans "
-           + ("WHERE target = ? " if target else "") + "ORDER BY id DESC")
+    sql = ("SELECT id, target, resolved_ip, started_at, config_json, ack_at, record_hash "
+           "FROM scans " + ("WHERE target = ? " if target else "") + "ORDER BY id DESC")
     cur = conn.execute(sql, (target,) if target else ())
     scans = []
     for row in cur.fetchall():
@@ -162,6 +180,7 @@ def list_scans(conn, target=None):
             "started_at": row["started_at"],
             "ports": f"{config['start_port']}-{config['end_port']}",
             "audited": row["ack_at"] is not None,
+            "chained": row["record_hash"] is not None,
         })
     return scans
 
@@ -199,6 +218,7 @@ def load_scan(conn, scan_id):
         "finished_at": head["finished_at"],
         "config": json.loads(head["config_json"]),
         "acknowledgment": acknowledgment,  # None means a pre-audit scan
+        "fingerprint": head["record_hash"],  # None means a pre-chain scan
         "results": results,
     }
 
@@ -210,5 +230,10 @@ if __name__ == "__main__":
     if not scans:
         print("No saved scans yet.")
     for s in scans:
-        note = "" if s["audited"] else "  (pre-audit: no authorization record)"
+        notes = []
+        if not s["audited"]:
+            notes.append("pre-audit: no authorization record")
+        if not s["chained"]:
+            notes.append("pre-chain: not verifiable")
+        note = f"  ({'; '.join(notes)})" if notes else ""
         print(f"#{s['id']:<4} {s['target']:<22} ports {s['ports']:<12} {s['started_at']}{note}")

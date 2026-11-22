@@ -25,7 +25,7 @@ CREATE TABLE port_results (
 
 
 def make_legacy_db(path):
-    """Create an old-style database holding one scan with two ports."""
+    """Create an old-style (version 1) database holding one scan with two ports."""
     conn = sqlite3.connect(path)
     conn.executescript(LEGACY_SCHEMA)
     conn.execute("INSERT INTO scans (target, resolved_ip, started_at, finished_at, config_json) "
@@ -37,6 +37,18 @@ def make_legacy_db(path):
     conn.execute("INSERT INTO port_results (scan_id, port, state, detail, banner, service, product, "
                  "confidence, evidence, unexpected) VALUES (1, 445, 'OPEN', '', '', 'unknown', '', "
                  "'unknown', 'no banner, no port guess', 0)")
+    conn.commit()
+    conn.close()
+
+
+def make_v2_db(path):
+    """Create a database exactly as the previous release (schema version 2) left it."""
+    make_legacy_db(path)
+    conn = sqlite3.connect(path)
+    for column in ("operator", "ack_at", "ack_version"):
+        conn.execute(f"ALTER TABLE scans ADD COLUMN {column} TEXT")
+    conn.execute("UPDATE scans SET operator='ADMIN', ack_at='2026-11-03T10:00:00+00:00', ack_version='1'")
+    conn.execute("PRAGMA user_version = 2")
     conn.commit()
     conn.close()
 
@@ -54,11 +66,11 @@ def sample_scan(ack=None):
 
 
 class TestFreshDatabase(unittest.TestCase):
-    def test_new_database_is_at_the_current_version_with_audit_columns(self):
+    def test_new_database_is_at_the_current_version_with_all_columns(self):
         db = storage.connect(":memory:")
         self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], storage.SCHEMA_VERSION)
         columns = {row["name"] for row in db.execute("PRAGMA table_info(scans)")}
-        self.assertTrue({"operator", "ack_at", "ack_version"} <= columns)
+        self.assertTrue({"operator", "ack_at", "ack_version", "prev_hash", "record_hash"} <= columns)
         db.close()
 
 
@@ -73,7 +85,7 @@ class TestMigration(unittest.TestCase):
 
     def test_old_database_is_upgraded_and_keeps_its_scans(self):
         db = storage.connect(self.path)
-        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], storage.SCHEMA_VERSION)
         scan = storage.load_scan(db, 1)
         self.assertEqual(scan["target"], "localhost")
         self.assertEqual(len(scan["results"]), 2)
@@ -110,9 +122,9 @@ class TestMigration(unittest.TestCase):
         conn.commit()
         conn.close()
         db = storage.connect(self.path)
-        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], storage.SCHEMA_VERSION)
         columns = {row["name"] for row in db.execute("PRAGMA table_info(scans)")}
-        self.assertTrue({"operator", "ack_at", "ack_version"} <= columns)
+        self.assertTrue({"operator", "ack_at", "ack_version", "prev_hash", "record_hash"} <= columns)
         db.close()
 
     def test_a_database_from_a_newer_version_is_refused(self):
@@ -122,6 +134,43 @@ class TestMigration(unittest.TestCase):
         conn.close()
         with self.assertRaises(ValueError):
             storage.connect(self.path)
+
+
+class TestUpgradeFromVersionTwo(unittest.TestCase):
+    """The situation of a database made by the previous release."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.path = os.path.join(self.tmp.name, "portwatch.db")
+        make_v2_db(self.path)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_upgrade_keeps_scans_and_their_authorization_records(self):
+        messages = []
+        db = storage.connect(self.path, on_migrate=messages.append)
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+        scan = storage.load_scan(db, 1)
+        self.assertEqual(scan["acknowledgment"]["operator"], "ADMIN")  # untouched by the upgrade
+        self.assertEqual(len(scan["results"]), 2)
+        self.assertTrue(messages and "backup" in messages[0].lower())
+        db.close()
+
+    def test_a_backup_of_the_version_two_database_is_made(self):
+        storage.connect(self.path).close()
+        backups = glob.glob(os.path.join(self.tmp.name, "portwatch.pre-migration-*.db"))
+        self.assertEqual(len(backups), 1)
+        old = sqlite3.connect(backups[0])
+        self.assertEqual(old.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(old.execute("SELECT COUNT(*) FROM scans").fetchone()[0], 1)
+        old.close()
+
+    def test_old_scans_are_pre_chain_and_get_no_invented_fingerprint(self):
+        db = storage.connect(self.path)
+        self.assertIsNone(storage.load_scan(db, 1)["fingerprint"])
+        self.assertFalse(storage.list_scans(db)[0]["chained"])
+        db.close()
 
 
 class TestStoredAcknowledgment(unittest.TestCase):
