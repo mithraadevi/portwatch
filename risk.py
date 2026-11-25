@@ -46,16 +46,28 @@ CONFIDENCE_WEIGHT = {"high": 1.0, "low": 0.5, "unknown": 0.0}
 MISMATCH_BONUS = 1.0  # a service on an unexpected port deserves a closer look
 
 
-def verdict_for(score):
+def verdict_for(score, not_scored=0):
+    """Headline for an exposure score.
+
+    not_scored is how many open ports could not be identified and so were left out
+    of the score ("needs review"). A score of 0 must not read as "no exposure" when
+    open ports exist that were never scored.
+    """
+    if score == 0 and not_scored:
+        return f"NOT SCORED: {not_scored} OPEN PORT(S) NEED REVIEW"
     if score == 0:
-        return "NO EXPOSURE FOUND"
-    if score <= 3:
-        return "LOW EXPOSURE"
-    if score <= 9:
-        return "MEDIUM EXPOSURE"
-    if score <= 15:
-        return "HIGH EXPOSURE"
-    return "VERY HIGH EXPOSURE"
+        label = "NO EXPOSURE FOUND"
+    elif score <= 3:
+        label = "LOW EXPOSURE"
+    elif score <= 9:
+        label = "MEDIUM EXPOSURE"
+    elif score <= 15:
+        label = "HIGH EXPOSURE"
+    else:
+        label = "VERY HIGH EXPOSURE"
+    if not_scored:
+        label += f" ({not_scored} OPEN PORT(S) NOT SCORED)"
+    return label
 
 
 def assess_port(entry):
@@ -112,11 +124,12 @@ def assess(scan_result):
     if errors:
         coverage_notes.append(f"{errors} port(s) hit errors and were not checked.")
 
+    needs_review = [f["port"] for f in findings if f["needs_review"]]
     return {
         "exposure_score": score,
-        "verdict": verdict_for(score),
+        "verdict": verdict_for(score, len(needs_review)),
         "findings": findings,
-        "needs_review": [f["port"] for f in findings if f["needs_review"]],
+        "needs_review": needs_review,
         "coverage_notes": coverage_notes,
         "disclaimer": "Exposure score reflects open services, not confirmed vulnerabilities.",
     }

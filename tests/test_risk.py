@@ -52,8 +52,28 @@ class TestAssess(unittest.TestCase):
         data = scan_with(*[entry(p, "unknown", "unknown", "none") for p in range(20, 33)])
         out = risk.assess(data)
         self.assertEqual(out["exposure_score"], 0)
-        self.assertEqual(out["verdict"], "NO EXPOSURE FOUND")
         self.assertEqual(len(out["needs_review"]), 13)
+        # ...but a score of 0 must not claim "no exposure" while 13 open ports are unscored.
+        self.assertEqual(out["verdict"], "NOT SCORED: 13 OPEN PORT(S) NEED REVIEW")
+        self.assertNotIn("NO EXPOSURE", out["verdict"])
+
+    def test_headline_when_nothing_is_open(self):
+        out = risk.assess(scan_with())
+        self.assertEqual(out["verdict"], "NO EXPOSURE FOUND")
+
+    def test_headline_flags_unscored_ports_next_to_a_real_score(self):
+        data = scan_with(entry(23, "telnet"), entry(54321, "unknown", "unknown", "none"),
+                         entry(54322, "unknown", "unknown", "none"))
+        out = risk.assess(data)
+        self.assertEqual(out["exposure_score"], 5)
+        self.assertEqual(out["verdict"], "MEDIUM EXPOSURE (2 OPEN PORT(S) NOT SCORED)")
+
+    def test_verdict_for_keeps_working_with_just_a_score(self):
+        self.assertEqual(risk.verdict_for(0), "NO EXPOSURE FOUND")
+        self.assertEqual(risk.verdict_for(3), "LOW EXPOSURE")
+        self.assertEqual(risk.verdict_for(9), "MEDIUM EXPOSURE")
+        self.assertEqual(risk.verdict_for(15), "HIGH EXPOSURE")
+        self.assertEqual(risk.verdict_for(16), "VERY HIGH EXPOSURE")
 
     def test_score_adds_up_and_verdict(self):
         data = scan_with(entry(23, "telnet"), entry(21, "ftp"), entry(22, "ssh"))
