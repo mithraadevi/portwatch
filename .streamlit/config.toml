@@ -1,0 +1,11 @@
+# PortWatch interface settings. Run `streamlit run app.py` from the PortWatch folder.
+
+[server]
+# Listen on this computer only. By default Streamlit also listens on the network, which
+# would let anyone on your network read your scan history (and, once the New Scan page
+# exists, start scans from your machine).
+address = "localhost"
+
+[browser]
+# Do not send anonymous usage statistics.
+gatherUsageStats = false

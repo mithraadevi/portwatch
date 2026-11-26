@@ -1,0 +1,6 @@
+# Extra packages needed only for the web interface (app.py).
+# The scanner and the command-line tools need nothing beyond the Python standard library.
+#
+# Install with:  python -m pip install -r requirements-ui.txt
+# The interface needs Python 3.11 or newer (current Streamlit no longer supports 3.10).
+streamlit>=1.52
