@@ -18,8 +18,8 @@ It started as a Colab notebook that *simulated* a port scan with random numbers.
 
 ## Requirements
 
-- Python 3.10 or newer (developed on Python 3.14 on Windows).
-- No third-party packages. Everything uses the Python standard library.
+- Python 3.10 or newer for the scanner and the command-line tools (developed on Python 3.14 on Windows). They use only the Python standard library.
+- The web interface additionally needs Python 3.11 or newer and Streamlit: `python -m pip install -r requirements-ui.txt`.
 
 ## Quick start
 
@@ -104,6 +104,9 @@ This is tamper-**evident**, not tamper-**proof**:
 | `tests/` | Automated tests |
 | `legacy/` | The original simulator notebook (see below) |
 | `docs/` | Project roadmap |
+| `app.py` | The Streamlit interface (pages only; no decisions) |
+| `ui_data.py` | Everything the interface shows, worked out in plain Python and tested separately |
+| `.streamlit/config.toml` | Interface settings: listen on localhost only, no usage statistics |
 
 All modules share one scan dictionary format, so a scan loaded from the database can be passed to anything that accepts a fresh scan.
 
@@ -131,7 +134,7 @@ The first version was a Colab notebook that simulated scan results randomly. It 
 
 ## Roadmap
 
-The design decisions, what changed from the original plan, and what is planned next are in `docs/PortWatch_Roadmap_Revision_2.docx`. Next up is a Streamlit interface (New Scan, Results, History, Drift).
+The design decisions, what changed from the original plan, and what is planned next are in `docs/PortWatch_Roadmap_Revision_2.docx`. The interface has History and Results pages so far; New Scan and Drift are next.
 
 ## License
 
