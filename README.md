@@ -69,6 +69,22 @@ then scan it from another terminal with `python run_scan.py`, using target `loca
 
 `run_drift.py` and `run_verify.py` only read the database.
 
+## Web interface (read-only for now)
+
+```
+python -m pip install -r requirements-ui.txt
+streamlit run app.py
+```
+
+Start it from the PortWatch folder. It has two pages so far:
+
+- **History**: every saved scan, with its authorization and history-verification status, and a banner that turns red if the history has been altered.
+- **Results**: the findings of any saved scan, with the exposure verdict and counts. Banners and other text that came from the scanned system are shown as plain text only, never as formatted content.
+
+It cannot scan anything or change anything yet. It opens the database in SQLite's read-only mode, and it will not upgrade an old database (run `python storage.py` once for that). The New Scan and Drift pages are next.
+
+The interface listens on `localhost` only (see `.streamlit/config.toml`), because Streamlit's default is to listen on the whole network, which would let anyone who can reach your computer read your scan history. If you start it from another folder, the page shows a warning. To read a different database, set the `PORTWATCH_DB` environment variable to its path.
+
 ## How drift detection stays honest
 
 A difference between two scans is *evidence* of change, not proof. Before comparing, PortWatch checks that:
